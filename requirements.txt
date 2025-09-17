@@ -133,3 +133,6 @@ websockets==15.0.1
 yarl==1.20.1
 zipp==3.23.0
 zstandard==0.25.0
+
+## streamlit 배포 시 chromadb와 sqlite 버전 안 맞음
+pysqlite3-binary

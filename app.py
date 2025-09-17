@@ -19,6 +19,11 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from dotenv import load_dotenv
 import streamlit as st
 
+############# streamlit 배포 시 chromadb와 sqlite 버전 안 맞음 ##################
+__import__('pysqlite3')
+import sys
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+##############################################################################
 
 # .env 파일에서 upstage key 받아오기
 from dotenv import load_dotenv
