@@ -152,12 +152,20 @@ if prompt := st.chat_input("Ask a question!"):
         st.markdown(prompt)
 
     # AI 응답처리
+    # st의 chat_message는 role에 따라 스타일을 다르게 UI를 만들어주는 녀석이네.
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         full_response = ""
         result = rag_chain.invoke({"input": prompt, "chat_history": st.session_state.messages})
-        with st.expander("참고 자료"):
-            st.write(result["context"])
+        # 일상대화인 경우에는 자료를 참고하지 않게 하고 싶다면. like GPT 처럼 검색할 경우와 검색하지 않고 답변할 경우를 나누고 싶다면? 
+        # 일단 retrieval chain이 아닌 일반 chain을 쓸 것이고 
+        # 들어오는 input을 chroma가 벡터화를 하는데 -> 이 input을 검색할 놈인지 아닌지를 판별해야한다. 
+        
+        # 간단하게는 prompt 분류로 intent를 라우팅 해줄 수 있겠지
+        if prompt not in ['하이', '안녕', 'hi', 'hello']:
+            with st.expander("참고 자료"):
+                st.write(result["context"])
+                
         for chunk in result["answer"].split(" "):
             full_response += chunk + " "
             time.sleep(0.2)
