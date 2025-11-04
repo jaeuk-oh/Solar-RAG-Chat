@@ -25,7 +25,15 @@ load_dotenv()
 # 세션 상태 초기화
 if "id" not in st.session_state:
     st.session_state.id = uuid.uuid4()
-    st.session_state.file_cache = {} 
+    st.session_state.file_cache = {}
+    
+# pdf 파일 저장 
+if "pdf_file" not in st.session_state:
+    st.session_state.pdf_file = None
+    
+# RAG 체인 저장
+if 'rag_chain' not in st.session_state:
+    st.session_state.rag_chain = None 
 
 # 세션 ID 설정
 session_id = st.session_state.id
@@ -43,81 +51,102 @@ def display_pdf(file):
     pdf_display = f"""<iframe src="data:application/pdf;base64,{base64_pdf}" width="400" height="100%" type="application/pdf" style="height:100vh; width:100%"></iframe>"""
     st.markdown(pdf_display, unsafe_allow_html=True)
 
+
 # 사이드바 구성
 with st.sidebar:
     st.header(f"Add your documents!")
+    # 여기서 uploade 되는 파일은 버퍼 객체이고 실제 파일은 없다. -> 그래서 f.write 코드가 있음.
     uploaded_file = st.file_uploader("Choose your `.pdf` file", type="pdf")
     # 파일 업로드 처리
     if uploaded_file:
-        print(uploaded_file)
-        try:
-            file_key = f"{session_id}-{uploaded_file.name}"
-            st.write("Indexing your document...")
-            # 임시 디렉토리 생성 및 파일 저장
-            with tempfile.TemporaryDirectory() as temp_dir:
-                file_path = os.path.join(temp_dir, uploaded_file.name)
-                print("file path:", file_path)
-                with open(file_path, "wb") as f:
-                    f.write(uploaded_file.getvalue())
-                
-                # PDF 로더 생성 및 문서 분할
-                if file_key not in st.session_state.get('file_cache', {}):
-                    if os.path.exists(temp_dir):
-                        print("temp_dir:", temp_dir)
-                        loader = PyPDFLoader(file_path)
-                    # 파일 경로 확인 및 에러 처리
-                    else:
-                        st.error('Could not find the file you uploaded, please check again...')
-                        st.stop()
-                    # 페이지 로드 및 벡터 스토어 생성
-                    pages = loader.load_and_split()
-                    vectorstore = Chroma.from_documents(pages, UpstageEmbeddings(model="solar-embedding-1-large"))
+        #print(uploaded_file)
+        file_key = f"{session_id}-{uploaded_file.name}"
+        #print("file_key: ", file_key)
+        
+        # 다른 파일이거나 새 파일인 경우에
+        if st.session_state.pdf_file != file_key:
+            try:
+                with st.spinner("파일 처리 중..."):
+                    # 임시 디렉토리 생성 및 파일 저장
+                    # with 역할 -> 임시폴더를 생성하고 다 쓰면 삭제한다.
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        file_path = os.path.join(temp_dir, uploaded_file.name)
+                        print("file path:", file_path)
+                        # with 역할 -> file 을 열고 f.close를 자동으로 호출 -> 안 닫으면 메모리 버퍼를 사용하는데 메모리 누수가 생길 수 있다.
+                        # 메모리 상의 파일을 실제 디스크 경로에 복사
+                        # pyPDFLoader는 파일 경로를 받는 애라 메모리 버퍼는 읽을 수 없음.
+                        with open(file_path, "wb") as f: # --> file path에 새로운 파일을 만들어라
+                            f.write(uploaded_file.getvalue())
+                            
+                        # PDF 로더 생성 및 문서 분할
+                        if os.path.exists(temp_dir):
+                            print("temp_dir:", temp_dir)
+                            loader = PyPDFLoader(file_path)
+                        # 파일 경로 확인 및 에러 처리
+                        else:
+                            st.error('Could not find the file you uploaded, please check again...')
+                            st.stop()
+                            
+                        # 페이지 로드 및 벡터 스토어 생성
+                        pages = loader.load_and_split()
+                        vectorstore = Chroma.from_documents(pages, UpstageEmbeddings(model="solar-embedding-1-large"))
+                        
+                        # 리트리버 생성
+                        retriever = vectorstore.as_retriever(k=2)
 
-                    # 리트리버 생성
-                    retriever = vectorstore.as_retriever(k=2)
+                        # 챗봇 생성
+                        api_key = os.getenv("UPSTAGE_API_KEY")
+                        chat = ChatUpstage(api_key=api_key)
 
-                    # 챗봇 생성
-                    api_key = os.getenv("UPSTAGE_API_KEY")
-                    chat = ChatUpstage(api_key=api_key)
+                        # 질문 재구성 프롬프트
+                        contextualize_q_system_prompt = """이전 대화 내용과 최신 사용자 질문이 있을 때, 이 질문이 이전 대화 내용과 관련이 있을 수 있습니다. 이런 경우, 대화 내용을 알 필요 없이 독립적으로 이해할 수 있는 질문으로 바꾸세요. 질문에 답할 필요는 없고, 필요하다면 그저 다시 구성하거나 그대로 두세요."""
 
-                    # 질문 재구성 프롬프트
-                    contextualize_q_system_prompt = """이전 대화 내용과 최신 사용자 질문이 있을 때, 이 질문이 이전 대화 내용과 관련이 있을 수 있습니다. 이런 경우, 대화 내용을 알 필요 없이 독립적으로 이해할 수 있는 질문으로 바꾸세요. 질문에 답할 필요는 없고, 필요하다면 그저 다시 구성하거나 그대로 두세요."""
-
-                    contextualize_q_prompt = ChatPromptTemplate.from_messages(
-                        [
-                            ("system", contextualize_q_system_prompt),
-                            MessagesPlaceholder("chat_history"),
-                            ("human", "{input}"),
-                        ]
-                    )
-                    # 히스토리 기반 리트리버 생성
-                    history_aware_retriever = create_history_aware_retriever(
-                        chat, retriever, contextualize_q_prompt
-                    )
-
-                    # 질문 답변 체인 생성
-                    qa_system_prompt = """질문-답변 업무를 돕는 보조원입니다. 질문에 답하기 위해 검색된 내용을 사용하세요. 답을 모르면 모른다고 말하세요. 답변은 세 문장 이내로 간결하게 유지하세요.
-                    ## 답변 예시
-                    📍답변 내용:
-                    📍증거:
-                    {context}"""
-                    qa_prompt = ChatPromptTemplate.from_messages(
-                        [
-                            ("system", qa_system_prompt),
-                            MessagesPlaceholder("chat_history"),
-                            ("human", "{input}"),
-                        ]
-                    )
-                    question_answer_chain = create_stuff_documents_chain(chat, qa_prompt)
-                    rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+                        contextualize_q_prompt = ChatPromptTemplate.from_messages(
+                            [
+                                ("system", contextualize_q_system_prompt),
+                                MessagesPlaceholder("chat_history"),
+                                ("human", "{input}"),
+                            ]
+                        )
+                        # 히스토리 기반 리트리버 생성
+                        history_aware_retriever = create_history_aware_retriever(
+                            chat, retriever, contextualize_q_prompt
+                        )                    
+                        # 질문 답변 체인 생성
+                        qa_system_prompt = """질문-답변 업무를 돕는 보조원입니다. 질문에 답하기 위해 검색된 내용을 사용하세요. 답을 모르면 모른다고 말하세요. 답변은 세 문장 이내로 간결하게 유지하세요.
+                        ## 답변 예시
+                        📍답변 내용:
+                        📍증거:
+                        {context}"""
+                        qa_prompt = ChatPromptTemplate.from_messages(
+                            [
+                                ("system", qa_system_prompt),
+                                MessagesPlaceholder("chat_history"),
+                                ("human", "{input}"),
+                            ]
+                        )
+                        question_answer_chain = create_stuff_documents_chain(chat, qa_prompt)
+                        
+                        if history_aware_retriever is None:
+                            print('시부럴 history가 없어')
+                        if question_answer_chain is None:
+                            print('시부럴 chain이 없어')
+                            
+                        st.session_state.rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+                        rag_chain = st.session_state.rag_chain
+                        
+                        # PDF 파일 디스플레이
+                        # rag_chain을 생성 해놓고 session state에 저장을 안 해서 "파일을 업로드 해주세요"라는 오류가 계속 발생하였다.
+                        # session_state에 저장해서 그걸 rag_chain 변수에 할당함.
+                        if rag_chain:
+                            st.success("Ready to Chat!")
+                            display_pdf(uploaded_file)
                     
-                    # PDF 파일 디스플레이
-                    st.success("Ready to Chat!")
-                    display_pdf(uploaded_file)
-        except Exception as e:
-                st.error(f"An error occuered : {e}")
-                st.stop()
-
+            except Exception as e:
+                    st.error(f"An error occuered : {e}")
+                    st.stop()
+ 
+                    
 # 웹사이트 제목 설정
 st.title("논문 같이 읽어줄게.💻#️⃣")
 
@@ -142,7 +171,17 @@ for message in st.session_state.messages:
 MAX_MESSAGES_BEFORE_DELETION = 12
 
 # 유저 입력 처리
+# st input은 사용자 입력이 없으면 None을 반환한다. 
+# 바다코끼리 연산자 := -> 값을 변수에 저장하면서 동시에 if로 조건을 건다.
+
+# ==> prompt = st.chat_input("Ask a question!")
+#     if prompt: 와 같은 코드다. 
 if prompt := st.chat_input("Ask a question!"):
+    print('\n'+f"is ragchain: {rag_chain}"+'\n')
+    if st.session_state.rag_chain is None:
+        st.warning(f"파일을 업로드 해주세요. chat : {prompt}")
+        st.stop()
+        
 	# 이전 대화의 길이 확인
     if len(st.session_state.messages) >= MAX_MESSAGES_BEFORE_DELETION:
         del st.session_state.messages[0]
@@ -157,10 +196,10 @@ if prompt := st.chat_input("Ask a question!"):
         message_placeholder = st.empty()
         full_response = ""
         result = rag_chain.invoke({"input": prompt, "chat_history": st.session_state.messages})
+        
         # 일상대화인 경우에는 자료를 참고하지 않게 하고 싶다면. like GPT 처럼 검색할 경우와 검색하지 않고 답변할 경우를 나누고 싶다면? 
         # 일단 retrieval chain이 아닌 일반 chain을 쓸 것이고 
         # 들어오는 input을 chroma가 벡터화를 하는데 -> 이 input을 검색할 놈인지 아닌지를 판별해야한다. 
-        
         # 간단하게는 prompt 분류로 intent를 라우팅 해줄 수 있겠지
         if prompt not in ['하이', '안녕', 'hi', 'hello']:
             with st.expander("참고 자료"):
