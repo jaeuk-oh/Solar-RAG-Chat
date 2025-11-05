@@ -28,8 +28,8 @@ if "id" not in st.session_state:
     st.session_state.file_cache = {}
     
 # pdf 파일 저장 
-if "pdf_file" not in st.session_state:
-    st.session_state.pdf_file = None
+if "file_key" not in st.session_state:
+    st.session_state.file_key = None
     
 # RAG 체인 저장
 if 'rag_chain' not in st.session_state:
@@ -61,12 +61,11 @@ with st.sidebar:
     if uploaded_file:
         #print(uploaded_file)
         file_key = f"{session_id}-{uploaded_file.name}"
-        #print("file_key: ", file_key)
-        
         # 다른 파일이거나 새 파일인 경우에
-        if st.session_state.pdf_file != file_key:
+        if st.session_state.file_key != file_key:
+            st.session_state.file_key = file_key
             try:
-                with st.spinner("파일 처리 중..."):
+                with st.spinner("새 파일 처리 중..."):
                     # 임시 디렉토리 생성 및 파일 저장
                     # with 역할 -> 임시폴더를 생성하고 다 쓰면 삭제한다.
                     with tempfile.TemporaryDirectory() as temp_dir:
@@ -126,25 +125,25 @@ with st.sidebar:
                             ]
                         )
                         question_answer_chain = create_stuff_documents_chain(chat, qa_prompt)
-                        
-                        if history_aware_retriever is None:
-                            print('시부럴 history가 없어')
-                        if question_answer_chain is None:
-                            print('시부럴 chain이 없어')
                             
-                        st.session_state.rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
-                        rag_chain = st.session_state.rag_chain
+                        rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+                        st.session_state.rag_chain = rag_chain
                         
                         # PDF 파일 디스플레이
                         # rag_chain을 생성 해놓고 session state에 저장을 안 해서 "파일을 업로드 해주세요"라는 오류가 계속 발생하였다.
                         # session_state에 저장해서 그걸 rag_chain 변수에 할당함.
-                        if rag_chain:
+                        if st.session_state.rag_chain:
                             st.success("Ready to Chat!")
                             display_pdf(uploaded_file)
                     
             except Exception as e:
                     st.error(f"An error occuered : {e}")
                     st.stop()
+        
+        else: 
+            # 기존에 업로든 한 파일
+            st.success("Use rag_chain in session state!")
+            display_pdf(uploaded_file)
  
                     
 # 웹사이트 제목 설정
@@ -177,9 +176,8 @@ MAX_MESSAGES_BEFORE_DELETION = 12
 # ==> prompt = st.chat_input("Ask a question!")
 #     if prompt: 와 같은 코드다. 
 if prompt := st.chat_input("Ask a question!"):
-    print('\n'+f"is ragchain: {rag_chain}"+'\n')
     if st.session_state.rag_chain is None:
-        st.warning(f"파일을 업로드 해주세요. chat : {prompt}")
+        st.warning(f"논문을 업로드 해주세요.")
         st.stop()
         
 	# 이전 대화의 길이 확인
@@ -195,7 +193,7 @@ if prompt := st.chat_input("Ask a question!"):
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         full_response = ""
-        result = rag_chain.invoke({"input": prompt, "chat_history": st.session_state.messages})
+        result = st.session_state.rag_chain.invoke({"input": prompt, "chat_history": st.session_state.messages})
         
         # 일상대화인 경우에는 자료를 참고하지 않게 하고 싶다면. like GPT 처럼 검색할 경우와 검색하지 않고 답변할 경우를 나누고 싶다면? 
         # 일단 retrieval chain이 아닌 일반 chain을 쓸 것이고 
